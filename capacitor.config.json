@@ -1,0 +1,9 @@
+{
+  "appId": "app.learnit.italiano",
+  "appName": "LearnIT",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#FBFAF7"
+  }
+}

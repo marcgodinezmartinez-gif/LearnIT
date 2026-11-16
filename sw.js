@@ -1,6 +1,6 @@
 // Permite usar la app sin conexión: primero red (para recibir mejoras), si falla, copia guardada.
-const CACHE = "learnit-v2";
-const FILES = ["./", "index.html", "styles.css", "manifest.webmanifest", "js/app.js", "js/content.js", "js/store.js", "js/speech.js", "js/tutor.js", "js/course.js", "js/course-a.js", "js/course-b.js", "js/verbs.js", "icons/icon-180.png"];
+const CACHE = "learnit-v3";
+const FILES = ["./", "index.html", "styles.css", "manifest.webmanifest", "js/app.js", "js/content.js", "js/store.js", "js/speech.js", "js/tutor.js", "js/course.js", "js/course-a.js", "js/course-b.js", "js/verbs.js", "js/native.js", "icons/icon-180.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

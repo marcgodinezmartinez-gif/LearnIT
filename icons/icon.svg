@@ -1,6 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#f7f3ec"/>
-  <path d="M96 150a54 54 0 0 1 54-54h212a54 54 0 0 1 54 54v150a54 54 0 0 1-54 54H250l-84 70v-70h-16a54 54 0 0 1-54-54z" fill="#1e7a4c"/>
-  <text x="256" y="262" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-weight="700" font-size="120" fill="#fff">Ciao</text>
-  <rect x="176" y="296" width="160" height="12" rx="6" fill="#c0392b"/>
+  <rect width="512" height="512" fill="#16181a"/>
+  <text x="218" y="330" text-anchor="middle" font-family="'New York', 'Iowan Old Style', 'Liberation Serif', Georgia, serif" font-style="italic" font-weight="500" font-size="260" fill="#fbfaf7">it</text>
+  <circle cx="344" cy="318" r="17" fill="#6fbf9c"/>
 </svg>

@@ -1,0 +1,20 @@
+{
+  "name": "learnit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Italiano en 8 semanas: app web y app de iOS (Capacitor).",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "ios:sync": "npm run build && npx cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/ios": "^8.6.2",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@capacitor/preferences": "^8.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2"
+  }
+}

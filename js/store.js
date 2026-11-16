@@ -1,6 +1,7 @@
 // Estado de la app, guardado en el dispositivo (localStorage).
 import { UNITS } from "./content.js";
 import { LEVELS, PASS_LESSON } from "./course.js";
+import { Preferences } from "./native.js";
 
 const KEY = "learnit.v1";
 export const PLAN_DAYS = UNITS.length * 7;
@@ -15,7 +16,7 @@ const defaults = () => ({
   custom: [], // frases propias: { it, es }
   activity: {}, // fecha -> true
   course: { placed: null, lessons: {}, exams: {} }, // nivel inicial, mejor nota por tema y por examen
-  settings: { rate: 0.9, voice: "", apiKey: "", model: "claude-opus-5-5", hideText: false, noSR: false },
+  settings: { rate: 0.9, voice: "", apiKey: "", model: "claude-opus-5-5", hideText: false, noSR: false, reminder: "" },
 });
 
 function load() {
@@ -29,8 +30,22 @@ function load() {
   return defaults();
 }
 
+// En la app de iOS guardamos además una copia en el almacenamiento nativo, que el sistema
+// no borra aunque libere espacio. Si falta la copia del navegador, se recupera de ahí.
+if (Preferences && !localStorage.getItem(KEY)) {
+  const saved = await Promise.race([
+    Preferences.get({ key: KEY }).catch(() => null),
+    new Promise((r) => setTimeout(() => r(null), 2000)),
+  ]);
+  if (saved?.value) localStorage.setItem(KEY, saved.value);
+}
+
 export let state = load();
-export const save = () => localStorage.setItem(KEY, JSON.stringify(state));
+export const save = () => {
+  const value = JSON.stringify(state);
+  localStorage.setItem(KEY, value);
+  Preferences?.set({ key: KEY, value }).catch(() => {});
+};
 export function replaceState(next) {
   const d = defaults();
   state = { ...d, ...next, settings: { ...d.settings, ...(next.settings || {}) }, course: { ...d.course, ...(next.course || {}) } };

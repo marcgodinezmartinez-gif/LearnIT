@@ -7,6 +7,7 @@ import { LEVELS, PASS_LESSON, PASS_EXAM } from "./course.js";
 import { VERBS, TENSES, PERSONS, conjugate, accepted } from "./verbs.js";
 import { lessonScore, lessonPassed, startLevel, nextLesson } from "./store.js";
 import * as voice from "./speech.js";
+import { isNative, setReminder } from "./native.js";
 import { tutorReply, tutorFeedback, explainError, OPENING } from "./tutor.js";
 
 // ---------- Utilidades de interfaz ----------
@@ -31,10 +32,28 @@ const shuffle = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { co
 const view = document.getElementById("view");
 const go = (hash) => { location.hash = hash; };
 
+const ICONS = {
+  sound: '<path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  back: '<path d="M14.5 5.5L8 12l6.5 6.5"/>',
+};
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("class", "ic");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = ICONS[name];
+  return svg;
+}
+const setLabel = (btn, text, ic) => btn.replaceChildren(...(ic ? [icon(ic), text] : [text]));
+const backBtn = (text, onclick) => h("button.btn.ghost", { onclick }, icon("back"), text);
+const mark = (ok = true) => h("div.mark" + (ok ? "" : ".soft"), ok ? icon("check") : "…");
+
 const playBtn = (text, label = "Escuchar") =>
-  h("button.btn.ghost", { onclick: () => voice.speak(text) }, "🔊 ", label);
+  h("button.btn.ghost", { onclick: () => voice.speak(text) }, icon("sound"), label);
 const slowBtn = (text) =>
-  h("button.btn.ghost", { onclick: () => voice.speak(text, { rate: 0.6 }) }, "🐢 Lento");
+  h("button.btn.ghost", { onclick: () => voice.speak(text, { rate: 0.6 }) }, "Lento");
 
 // Botón de micrófono. Con `target` compara lo que dices con la frase modelo;
 // si el navegador no reconoce voz, te graba para que te compares tú.
@@ -46,7 +65,8 @@ function micWidget(target, { onResult } = {}) {
 
   const mode = () => (voice.canRecognize() ? "sr" : voice.canRecord() ? "rec" : "none");
   const label = () => {
-    btn.textContent = busy ? (mode() === "sr" ? "Te escucho…" : "⏹ Parar") : mode() === "sr" ? "🎤 Dilo" : "🎤 Grábate";
+    if (busy) setLabel(btn, mode() === "sr" ? "Te escucho…" : "Parar");
+    else setLabel(btn, mode() === "sr" ? "Dilo" : "Grábate", "mic");
     btn.classList.toggle("live", busy);
   };
   if (mode() === "none") {
@@ -274,7 +294,7 @@ function runOido(el, pool, u, next, n = 6) {
     const p = items[i], dictation = i >= items.length - nDict;
     const head = h("div",
       h("p.label", dictation ? "Dictado: escribe lo que oyes" : "¿Qué ha dicho?"),
-      h("div.row", h("button.btn.ghost", { onclick: () => voice.speak(p.it, { rate: 1 }) }, "🔊 Otra vez"), slowBtn(p.it)));
+      h("div.row", h("button.btn.ghost", { onclick: () => voice.speak(p.it, { rate: 1 }) }, icon("sound"), "Otra vez"), slowBtn(p.it)));
     const after = h("div", h("p.it", p.it), h("p.es", p.es));
     const advance = () => { i++; show(); };
     let card;
@@ -317,14 +337,14 @@ function micWidgetFree() {
   let rec = null;
   const btn = h("button.btn.mic", { onclick: async () => {
     if (!rec) {
-      try { rec = await voice.startRecording(); btn.textContent = "⏹ Parar"; btn.classList.add("live"); out.replaceChildren(); }
+      try { rec = await voice.startRecording(); setLabel(btn, "Parar"); btn.classList.add("live"); out.replaceChildren(); }
       catch { out.replaceChildren(h("p.hint", "Necesito permiso para usar el micrófono.")); }
     } else {
       const url = await rec.stop(); rec = null;
-      btn.textContent = "🎤 Grabar otra vez"; btn.classList.remove("live");
+      setLabel(btn, "Grabar otra vez", "mic"); btn.classList.remove("live");
       out.replaceChildren(h("audio", { src: url, controls: true }));
     }
-  } }, "🎤 Grabar");
+  } }, icon("mic"), "Grabar");
   return h("div.mic-box", btn, out);
 }
 
@@ -334,7 +354,7 @@ function runChat(el, scenario, next) {
   const log = h("div.chat");
   const status = h("p.hint.center");
   const input = h("input.input", { type: "text", placeholder: "…o escribe aquí", autocapitalize: "off", onkeydown: (e) => e.key === "Enter" && send(input.value) });
-  const micBtn = h("button.btn.mic", { onclick: talk }, "🎤 Hablar");
+  const micBtn = h("button.btn.mic", { onclick: talk }, icon("mic"), "Hablar");
   const controls = h("div.foot", status,
     h("div.row", voice.canRecognize() ? micBtn : null, input, h("button.btn.primary", { onclick: () => send(input.value) }, "Enviar")));
   const endBtn = h("button.btn.ghost", { onclick: finish }, "Terminar y ver mi feedback");
@@ -355,9 +375,9 @@ function runChat(el, scenario, next) {
       const r = await tutorReply(scenario, history);
       if (!el.isConnected) return;
       history.push({ role: "assistant", content: r.raw });
-      if (r.note && lastUserBubble) lastUserBubble.append(h("p.note", "✏️ " + r.note));
+      if (r.note && lastUserBubble) lastUserBubble.append(h("p.note", r.note));
       const text = h("p.it", r.reply);
-      const b = add("them", text, h("button.link", { onclick: (e) => { e.stopPropagation(); voice.speak(r.reply); } }, "🔊 Repetir"));
+      const b = add("them", text, h("button.link", { onclick: (e) => { e.stopPropagation(); voice.speak(r.reply); } }, icon("sound"), "Repetir"));
       if (state.settings.hideText) {
         text.classList.add("blur");
         b.append(h("button.link", { onclick: (e) => { e.stopPropagation(); text.classList.remove("blur"); e.target.remove(); } }, "Ver texto"));
@@ -381,12 +401,12 @@ function runChat(el, scenario, next) {
   }
   async function talk() {
     if (micBtn.classList.contains("live")) return voice.stopListening();
-    micBtn.classList.add("live"); micBtn.textContent = "Te escucho…";
+    micBtn.classList.add("live"); setLabel(micBtn, "Te escucho…");
     try {
       const alts = await voice.listen();
       if (alts.length) send(alts[0]); else status.textContent = "No te he oído. Prueba otra vez.";
     } catch { status.textContent = "El micrófono no está disponible: escribe tu respuesta."; micBtn.hidden = !voice.canRecognize(); }
-    micBtn.classList.remove("live"); micBtn.textContent = "🎤 Hablar";
+    micBtn.classList.remove("live"); setLabel(micBtn, "Hablar", "mic");
   }
   async function finish() {
     voice.stopSpeaking();
@@ -438,7 +458,7 @@ function viewHoy() {
     h("div.card.hero",
       h("p.label", `Día ${day + 1} · Semana ${Math.floor(day / 7) + 1}`),
       h("h2", unit.title), h("p.sub", `${unit.es}. ${unit.goal}`),
-      h("ol.steps", steps.map((s) => h("li", s.title, h("span", ` · ${s.min} min`)))),
+      h("ol.steps", steps.map((s) => h("li", s.title, h("span", `${s.min} min`)))),
       h("button.btn.primary.xl", { onclick: () => go(`#/sesion/${day}`) },
         doneToday ? "Hacer otra sesión" : state.progress?.day === day && state.progress.date === today() ? "Continuar la sesión" : "Empezar la sesión"),
       h("p.hint", `Unos ${steps.reduce((a, s) => a + s.min, 0)} minutos. ${doneToday ? "La de hoy ya está hecha: lo que hagas ahora es extra." : ""}`)),
@@ -456,7 +476,7 @@ function viewSesion(day) {
   const title = h("h2");
   const body = h("div.step");
   view.replaceChildren(
-    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/hoy") }, "← Salir"),
+    h("header.top.row", backBtn("Salir", () => go("#/hoy")),
       h("p.sub", `Día ${day + 1} · ${unitOf(day).title}`)),
     bar, title, body);
 
@@ -477,7 +497,7 @@ function viewSesion(day) {
     save();
     title.textContent = "";
     body.replaceChildren(h("div.card.big.center",
-      h("p.emoji", "🎉"), h("h2", "Bravissimo!"),
+      mark(), h("h2", "Bravissimo."),
       h("p", `Día ${day + 1} completado. Llevas ${streak()} ${streak() === 1 ? "día" : "días seguidos"}.`),
       h("p.hint", "Reto de hoy: dile a tu novia una de las frases nuevas, en voz alta."),
       h("button.btn.primary.xl", { onclick: () => go("#/hoy") }, "Volver al inicio")));
@@ -488,13 +508,13 @@ function viewSesion(day) {
 
 function viewSituaciones() {
   const detail = h("div");
-  const open = (make) => { detail.replaceChildren(h("button.btn.ghost", { onclick: () => route() }, "← Volver"), h("div.step", {}, [])); make(detail.lastChild); list.hidden = true; window.scrollTo(0, 0); };
+  const open = (make) => { detail.replaceChildren(backBtn("Volver", () => route()), h("div.step", {}, [])); make(detail.lastChild); list.hidden = true; window.scrollTo(0, 0); };
   const list = h("div", UNITS.map((u, w) =>
     h("div.card", h("p.label", `Semana ${w + 1}`), h("h2", u.title), h("p.sub", u.goal),
       h("div.chips",
-        u.dialogues.map((d) => h("div.chipgroup", h("span", `💬 ${d.title}`),
+        u.dialogues.map((d) => h("div.chipgroup", h("span", d.title),
           DIALOGUE_MODES.map(([name], m) => h("button.chip", { onclick: () => open((el) => runDialogue(el, d, m, () => route())) }, name)))),
-        h("div.chipgroup", h("span", "💡 Claves"),
+        h("div.chipgroup", h("span", "Claves"),
           u.claves.map((c) => h("button.chip", { onclick: () => open((el) => runClave(el, c, () => route())) }, c.title)))))));
   view.replaceChildren(h("header.top", h("h1", "Situaciones"), h("p.sub", "Practica cualquier diálogo o clave cuando quieras.")), list, detail);
 }
@@ -531,7 +551,7 @@ function viewFrases() {
   view.replaceChildren(
     h("header.top", h("h1", "Frases"), h("p.sub", "Toca cualquier frase para oírla.")),
     due.length ? h("button.btn.primary", { onclick: () => {
-      const el = h("div.step"); view.replaceChildren(h("button.btn.ghost", { onclick: () => route() }, "← Volver"), el);
+      const el = h("div.step"); view.replaceChildren(backBtn("Volver", () => route()), el);
       runReview(el, due, () => { state.activity[today()] = true; save(); route(); });
     } }, `Repasar ahora (${due.length})`) : null,
     addBox, search, listEl);
@@ -566,8 +586,16 @@ function viewAjustes() {
   const model = bind(h("select.input",
     [["claude-opus-5-5", "Claude Opus 5.5 (recomendado)"], ["claude-sonnet-5-5", "Claude Sonnet 5.5 (más barato)"], ["claude-haiku-5-5", "Claude Haiku 5.5 (el más barato)"]]
       .map(([id, name]) => h("option", { value: id, selected: id === s.model }, name))), (v) => (s.model = v));
+  const reminderMsg = h("p.hint");
+  const reminder = h("input.input", { type: "time", value: s.reminder, onchange: async () => {
+    const ok = await setReminder(reminder.value).catch(() => false);
+    s.reminder = ok ? reminder.value : ""; save();
+    reminderMsg.textContent = !ok ? "No se ha podido programar. Revisa el permiso de notificaciones." : reminder.value ? `Te avisaré cada día a las ${reminder.value}.` : "Recordatorio desactivado.";
+  } });
+  const backupMsg = h("p.hint");
+  const restore = (text) => { try { replaceState(JSON.parse(text)); route(); } catch { alert("Esa copia no es válida."); } };
   const file = h("input", { type: "file", accept: "application/json", hidden: true, onchange: async () => {
-    try { replaceState(JSON.parse(await file.files[0].text())); route(); } catch { alert("Ese archivo no es una copia válida."); }
+    restore(await file.files[0].text());
   } });
 
   view.replaceChildren(
@@ -580,21 +608,34 @@ function viewAjustes() {
         ? "Para una voz más natural, descarga una voz «mejorada» en Ajustes del iPad › Accesibilidad › Contenido leído › Voces › Italiano."
         : "Este dispositivo no tiene voces italianas instaladas."),
       field("Velocidad", rate, "Empieza despacio y súbela cada semana."),
-      h("button.btn.ghost", { onclick: () => voice.speak("Ciao! Sono la tua voce italiana. Come stai oggi?") }, "🔊 Probar")),
+      h("button.btn.ghost", { onclick: () => voice.speak("Ciao! Sono la tua voce italiana. Come stai oggi?") }, icon("sound"), "Probar"),
+      s.noSR && h("div.field", h("small", "El reconocimiento de voz está desactivado porque no había permiso. Actívalo en los ajustes del sistema y vuelve a probar."),
+        h("button.btn.ghost", { onclick: () => { s.noSR = false; save(); route(); } }, "Volver a intentar el reconocimiento de voz"))),
+    isNative && h("div.card", h("h3", "Recordatorio diario"),
+      field("Hora del aviso", reminder, "Déjalo vacío para no recibir avisos."), reminderMsg),
     h("div.card", h("h3", "Tutor de IA"),
-      h("p.hint", "Crea una clave en console.anthropic.com, ponle un límite de gasto y pégala aquí. Se guarda solo en este iPad y se usa únicamente para hablar con el tutor."),
+      h("p.hint", "Crea una clave en console.anthropic.com, ponle un límite de gasto y pégala aquí. Se guarda solo en este dispositivo y se usa únicamente para hablar con el tutor."),
       field("Clave de API", bind(h("input.input", { type: "password", value: s.apiKey, placeholder: "sk-ant-…", autocomplete: "off" }), (v) => (s.apiKey = v.trim()))),
       field("Modelo", model),
       field("Entrenar el oído", h("div.row", bind(h("input", { type: "checkbox", checked: s.hideText }), (v) => (s.hideText = v)), h("span", "Ocultar el texto del tutor hasta que lo pida")))),
     h("div.card", h("h3", "Tus datos"),
       h("p.hint", "Tu progreso se guarda solo en este dispositivo. Haz una copia de vez en cuando."),
       h("div.row",
-        h("button.btn.ghost", { onclick: () => {
-          const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(state)], { type: "application/json" })), download: `learnit-${today()}.json` });
-          a.click();
-        } }, "Exportar copia"),
-        h("button.btn.ghost", { onclick: () => file.click() }, "Importar copia"), file,
-        h("button.btn.danger", { onclick: () => { if (confirm("¿Borrar todo tu progreso? No se puede deshacer.")) { resetState(); route(); } } }, "Borrar progreso"))),
+        ...(isNative ? [
+          h("button.btn.ghost", { onclick: async () => {
+            try { await navigator.clipboard.writeText(JSON.stringify(state)); backupMsg.textContent = "Copia en el portapapeles: pégala en Notas para guardarla."; }
+            catch { backupMsg.textContent = "No se ha podido copiar."; }
+          } }, "Copiar copia"),
+          h("button.btn.ghost", { onclick: () => { const text = prompt("Pega aquí tu copia:"); if (text) restore(text); } }, "Pegar copia"),
+        ] : [
+          h("button.btn.ghost", { onclick: () => {
+            const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(state)], { type: "application/json" })), download: `learnit-${today()}.json` });
+            a.click();
+          } }, "Exportar copia"),
+          h("button.btn.ghost", { onclick: () => file.click() }, "Importar copia"), file,
+        ]),
+        h("button.btn.danger", { onclick: () => { if (confirm("¿Borrar todo tu progreso? No se puede deshacer.")) { resetState(); route(); } } }, "Borrar progreso")),
+      backupMsg),
   );
 }
 
@@ -648,10 +689,11 @@ function runExercises(el, list, done) {
         verdict(ok, type === "t");
       } }, "Comprobar");
       const dictate = type === "t" && voice.canRecognize() && h("button.btn.ghost", { onclick: async (e) => {
-        e.target.textContent = "Te escucho…";
+        const b = e.currentTarget;
+        setLabel(b, "Te escucho…");
         try { const alt = await voice.listen(); if (alt.length) input.value = alt[0]; } catch {}
-        e.target.textContent = "🎤 Dilo";
-      } }, "🎤 Dilo");
+        setLabel(b, "Dilo", "mic");
+      } }, icon("mic"), "Dilo");
       body = [h("p.label", type === "g" ? "Completa" : "Traduce al italiano"), h("p.q", prompt), h("div.row", input, dictate), check, fb];
       setTimeout(() => input.focus(), 50);
     }
@@ -723,7 +765,7 @@ function viewLeccion(L, i) {
   const bar = h("div.bar"), body = h("div.step");
   const stage = (n) => { bar.replaceChildren(...[0, 1, 2].map((k) => h(`span${k < n ? ".done" : k === n ? ".now" : ""}`))); window.scrollTo(0, 0); };
   view.replaceChildren(
-    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", `Nivel ${lv.id} · Tema ${i + 1}`)),
+    h("header.top.row", backBtn("Curso", () => go("#/curso")), h("p.sub", `Nivel ${lv.id} · Tema ${i + 1}`)),
     bar, h("h2", les.t), body);
 
   const theory = () => {
@@ -735,7 +777,7 @@ function viewLeccion(L, i) {
     stage(1);
     body.replaceChildren(
       h("p.hint", `${les.vocabTitle}. Toca cada palabra, escúchala y repítela en voz alta. Entrarán en tu repaso diario.`),
-      h("div.card.flush", les.vocab.map(([it, es]) => h("div.prow", { onclick: () => voice.speak(it) }, h("div", h("p.it", it), h("p.es", es)), h("span", "🔊")))),
+      h("div.card.flush", les.vocab.map(([it, es]) => h("div.prow", { onclick: () => voice.speak(it) }, h("div", h("p.it", it), h("p.es", es)), icon("sound")))),
       h("div.row", h("button.btn.ghost", { onclick: theory }, "Volver a la teoría"),
         h("button.btn.primary", { onclick: () => { les.vocab.forEach((_, k) => learn(`v-${L}-${i}-${k}`)); save(); exercises(); } }, "Ejercicios")));
   };
@@ -747,7 +789,7 @@ function viewLeccion(L, i) {
       stage(3);
       const ok = score >= PASS_LESSON, n = nextLesson();
       body.replaceChildren(h("div.card.big.center",
-        h("p.emoji", ok ? "✅" : "💪"), h("h2", ok ? "Tema superado" : "Casi"),
+        mark(ok), h("h2", ok ? "Tema superado" : "Casi"),
         h("p", `Has acertado el ${pct(score)}. ${ok ? "" : `Necesitas un ${pct(PASS_LESSON)} para darlo por superado: repasa la teoría y repite.`}`),
         h("div.row.center",
           h("button.btn.ghost", { onclick: theory }, "Repasar la teoría"),
@@ -763,7 +805,7 @@ function viewExamen(L) {
   const lv = LEVELS[L], body = h("div.step");
   const list = shuffle(lv.lessons.flatMap((les) => shuffle(les.ex).slice(0, 3))).slice(0, 15);
   view.replaceChildren(
-    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", `Examen de nivel ${lv.id}`)), body);
+    h("header.top.row", backBtn("Curso", () => go("#/curso")), h("p.sub", `Examen de nivel ${lv.id}`)), body);
   body.replaceChildren(h("div.card.big",
     h("h2", `Examen de nivel ${lv.id}`),
     h("p", `${list.length} preguntas de todos los temas del nivel. Lo superas con un ${pct(PASS_EXAM)}.`),
@@ -772,7 +814,7 @@ function viewExamen(L) {
       markActive();
       const ok = score >= PASS_EXAM;
       body.replaceChildren(h("div.card.big.center",
-        h("p.emoji", ok ? "🏅" : "💪"), h("h2", ok ? `Nivel ${lv.id} superado` : "Todavía no"),
+        mark(ok), h("h2", ok ? `Nivel ${lv.id} superado` : "Todavía no"),
         h("p", `Has acertado el ${pct(score)}. ${ok ? "" : "Repasa los temas con peor nota y vuelve a intentarlo."}`),
         h("button.btn.primary", { onclick: () => go("#/curso") }, "Volver al curso")));
     }) }, "Empezar")));
@@ -782,11 +824,11 @@ function viewPrueba() {
   const body = h("div.step");
   const PER_LEVEL = 6, NEED = 5;
   view.replaceChildren(
-    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", "Prueba de nivel")), body);
+    h("header.top.row", backBtn("Curso", () => go("#/curso")), h("p.sub", "Prueba de nivel")), body);
   const finish = (L) => {
     state.course.placed = L; save();
     body.replaceChildren(h("div.card.big.center",
-      h("p.emoji", "🎯"), h("h2", `Empiezas en el nivel ${LEVELS[L].id}`),
+      mark(), h("h2", `Empiezas en el nivel ${LEVELS[L].id}`),
       h("p", L === 0 ? "Empezamos por los cimientos. Irás rápido: mucho te sonará del español y del catalán."
         : `Los niveles anteriores quedan convalidados, pero siguen abiertos por si quieres repasar algo.`),
       h("button.btn.primary", { onclick: () => go("#/curso") }, "Ver mi curso")));
@@ -817,7 +859,7 @@ function viewVerbos() {
     return c;
   }));
   view.replaceChildren(
-    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", "Entrenador de verbos")),
+    h("header.top.row", backBtn("Curso", () => go("#/curso")), h("p.sub", "Entrenador de verbos")),
     h("div.card", h("p.label", "Tiempos que quieres practicar"), chips), body);
 
   const table = (v, tense) => h("table", conjugate(v, tense).map((f, p) => h("tr", h("td", PERSONS[p]), h("td", f))));
@@ -827,7 +869,7 @@ function viewVerbos() {
     const ask = () => {
       if (n >= TOTAL) {
         markActive();
-        return body.replaceChildren(h("div.card.big.center", h("p.emoji", right >= 8 ? "🔥" : "💪"), h("h2", `${right} de ${TOTAL}`),
+        return body.replaceChildren(h("div.card.big.center", mark(right >= 8), h("h2", `${right} de ${TOTAL}`),
           h("button.btn.primary", { onclick: round }, "Otra ronda")));
       }
       const v = VERBS[Math.floor(Math.random() * VERBS.length)];
@@ -874,4 +916,4 @@ function route() {
 window.addEventListener("hashchange", route);
 route();
 
-if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+if (!isNative && "serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});

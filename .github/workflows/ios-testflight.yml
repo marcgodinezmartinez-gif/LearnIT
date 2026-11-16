@@ -1,0 +1,118 @@
+name: iOS · TestFlight
+
+# Se lanza a mano desde la pestaña Actions. Genera el proyecto de iOS con Capacitor,
+# lo compila y, si se pide, lo firma y lo sube a TestFlight.
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Subir a TestFlight (desmarcado: solo comprueba que compila)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # con pipefail: si xcodebuild falla, el paso falla
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      BUNDLE_ID: ${{ vars.BUNDLE_ID }}
+      TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      WORKSPACE: ios/App/App.xcworkspace
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Aplicar el identificador de la app
+        if: env.BUNDLE_ID != ''
+        run: |
+          node -e '
+            const fs = require("fs");
+            const c = JSON.parse(fs.readFileSync("capacitor.config.json", "utf8"));
+            c.appId = process.env.BUNDLE_ID;
+            fs.writeFileSync("capacitor.config.json", JSON.stringify(c, null, 2));
+          '
+
+      - name: Generar el proyecto de iOS
+        run: |
+          npm run build
+          npx cap add ios --packagemanager CocoaPods
+
+      - name: Icono, pantalla de inicio y permisos
+        run: |
+          cp resources/icon-1024.png "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png"
+          for f in ios/App/App/Assets.xcassets/Splash.imageset/*.png; do cp resources/splash-2732.png "$f"; done
+          PLIST=ios/App/App/Info.plist
+          pb() { /usr/libexec/PlistBuddy -c "$1" "$PLIST"; }
+          pb "Add :NSMicrophoneUsageDescription string 'LearnIT usa el micrófono para escuchar cómo pronuncias el italiano.'"
+          pb "Add :NSSpeechRecognitionUsageDescription string 'LearnIT reconoce lo que dices para comprobar tus frases en italiano.'"
+          pb "Add :ITSAppUsesNonExemptEncryption bool false"
+          pb "Set :CFBundleDevelopmentRegion es"
+
+      - name: Comprobar que compila (simulador, sin firmar)
+        if: ${{ !inputs.upload }}
+        run: |
+          xcodebuild build \
+            -workspace "$WORKSPACE" -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO | tail -n 40
+
+      - name: Firmar y subir a TestFlight
+        if: ${{ inputs.upload }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          for v in BUNDLE_ID TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
+            if [ -z "${!v}" ]; then echo "::error::Falta configurar $v en Settings > Secrets and variables > Actions"; exit 1; fi
+          done
+          KEY="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s' "$ASC_KEY_P8" > "$KEY"
+          AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+
+          xcodebuild archive \
+            -workspace "$WORKSPACE" -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            "${AUTH[@]}" \
+            DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
+            MARKETING_VERSION=1.0 CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" | tail -n 40
+
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" "${AUTH[@]}" | tail -n 40
+          rm -f "$KEY"

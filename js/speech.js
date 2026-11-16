@@ -1,5 +1,6 @@
 // Voz: síntesis (la app habla), reconocimiento (te escucha) y grabación (te oyes).
 import { state, save } from "./store.js";
+import { isNative, SpeechRecognition as NativeSR } from "./native.js";
 
 // ---- Síntesis ----
 const synth = window.speechSynthesis;
@@ -48,13 +49,57 @@ export function speak(text, { rate } = {}) {
 
 // ---- Reconocimiento ----
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-export const canRecognize = () => !!SR && !state.settings.noSR;
+export const canRecognize = () => (isNative || !!SR) && !state.settings.noSR;
 
 let activeRec = null;
-export function stopListening() { try { activeRec?.stop(); } catch {} }
+let stopNative = null;
+export function stopListening() {
+  if (stopNative) return stopNative();
+  try { activeRec?.stop(); } catch {}
+}
+
+// En la app usamos el reconocimiento de voz de iOS. No se detiene solo de forma fiable,
+// así que lo paramos nosotros tras un silencio.
+async function listenNative() {
+  stopSpeaking();
+  const perm = await NativeSR.requestPermissions();
+  if (perm.speechRecognition !== "granted") {
+    state.settings.noSR = true;
+    save();
+    throw new Error("denied");
+  }
+  let matches = [], silence, finished = false, resolve;
+  const result = new Promise((r) => (resolve = r));
+  const finish = async () => {
+    if (finished) return;
+    finished = true;
+    stopNative = null;
+    clearTimeout(silence);
+    clearTimeout(limit);
+    await handle.remove().catch(() => {});
+    await NativeSR.stop().catch(() => {});
+    resolve(matches);
+  };
+  const waitSilence = (ms) => { clearTimeout(silence); silence = setTimeout(finish, ms); };
+  const handle = await NativeSR.addListener("partialResults", (data) => {
+    matches = data.matches || [];
+    waitSilence(1600);
+  });
+  const limit = setTimeout(finish, 30000);
+  stopNative = finish;
+  try {
+    await NativeSR.start({ language: "it-IT", maxResults: 3, partialResults: true, popup: false });
+  } catch (err) {
+    await finish();
+    throw err;
+  }
+  waitSilence(7000); // si no dices nada
+  return result;
+}
 
 // Devuelve las alternativas que ha entendido (puede ser una lista vacía).
 export function listen() {
+  if (isNative) return listenNative();
   return new Promise((resolve, reject) => {
     stopSpeaking();
     const r = new SR();
