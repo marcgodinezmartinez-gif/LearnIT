@@ -109,6 +109,8 @@ export async function startRecording() {
 const tokens = (s) =>
   s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
 
+export const normalize = (s) => tokens(s).join(" ");
+
 function close(a, b) {
   if (a === b) return true;
   if (a.length < 4 || Math.abs(a.length - b.length) > 1) return false;

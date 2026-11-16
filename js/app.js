@@ -3,6 +3,9 @@ import {
   state, save, replaceState, resetState, today, daysBetween, phrase, learn, grade, dueCards,
   doneCount, currentDay, streak, PLAN_DAYS,
 } from "./store.js";
+import { LEVELS, PASS_LESSON, PASS_EXAM } from "./course.js";
+import { VERBS, TENSES, PERSONS, conjugate, accepted } from "./verbs.js";
+import { lessonScore, lessonPassed, startLevel, nextLesson } from "./store.js";
 import * as voice from "./speech.js";
 import { tutorReply, tutorFeedback, explainError, OPENING } from "./tutor.js";
 
@@ -244,7 +247,7 @@ function quizCard(q, onDone) {
     const b = h("button.btn.opt", { onclick: () => {
       [...opts.children].forEach((c, j) => { c.disabled = true; if (j === q.a) c.classList.add("right"); });
       if (idx !== q.a) b.classList.add("wrong");
-      fb.replaceChildren(q.after || null, h("button.btn.primary", { onclick: onDone }, "Seguir"));
+      fb.replaceChildren(q.after || null, h("button.btn.primary", { onclick: () => onDone(idx === q.a) }, "Seguir"));
     } }, t);
     opts.append(b);
   });
@@ -440,6 +443,7 @@ function viewHoy() {
         doneToday ? "Hacer otra sesión" : state.progress?.day === day && state.progress.date === today() ? "Continuar la sesión" : "Empezar la sesión"),
       h("p.hint", `Unos ${steps.reduce((a, s) => a + s.min, 0)} minutos. ${doneToday ? "La de hoy ya está hecha: lo que hagas ahora es extra." : ""}`)),
     h("p.hint.center", pace),
+    courseCard(),
     h("h3", "Tu plan de 8 semanas"), grid,
   );
 }
@@ -594,16 +598,276 @@ function viewAjustes() {
   );
 }
 
+// ---------- Curso por niveles ----------
+// Recorre una lista de ejercicios y devuelve la proporción de aciertos.
+function runExercises(el, list, done) {
+  let i = 0, right = 0;
+  const advance = (ok) => { if (ok) right++; i++; show(); };
+  const show = () => {
+    if (i >= list.length) return done(right / list.length);
+    const [type, prompt, ...rest] = list[i];
+    const count = h("p.count", `${i + 1} de ${list.length}`);
+    if (type === "c") {
+      const opts = shuffle(rest);
+      return el.replaceChildren(count, quizCard({ q: prompt, opts, a: opts.indexOf(rest[0]) }, advance));
+    }
+    const alts = rest[0].split("|");
+    const fb = h("div.fb");
+    const verdict = (ok, say) => {
+      check.hidden = true;
+      fb.replaceChildren(h(`p.verdict.${ok ? "ok" : "no"}`, ok ? "Correcto" : "No del todo"),
+        h("p.it", alts[0]), h("button.btn.primary", { onclick: () => advance(ok) }, "Seguir"));
+      if (say) voice.speak(alts[0]);
+      fb.lastChild.focus();
+    };
+    let body, check;
+    if (type === "o") {
+      const words = alts[0].split(" ");
+      let pool = shuffle(words.map((w, k) => ({ w, k })));
+      if (words.length > 1 && pool.every((p, k) => p.k === k)) pool.reverse();
+      const picked = [];
+      const answer = h("div.words.answer-line"), bank = h("div.words");
+      const draw = () => {
+        answer.replaceChildren(...picked.map((p) => h("button.word", { onclick: () => { if (check.hidden) return; picked.splice(picked.indexOf(p), 1); pool.push(p); draw(); } }, p.w)));
+        bank.replaceChildren(...pool.map((p) => h("button.word", { onclick: () => { pool.splice(pool.indexOf(p), 1); picked.push(p); draw(); } }, p.w)));
+        check.disabled = pool.length > 0;
+      };
+      check = h("button.btn.primary", { onclick: () => verdict(voice.normalize(picked.map((p) => p.w).join(" ")) === voice.normalize(alts[0]), true) }, "Comprobar");
+      body = [h("p.label", "Ordena las palabras"), h("p.q", prompt), answer, bank, check, fb];
+      draw();
+    } else {
+      const input = h("input.input", { type: "text", placeholder: type === "g" ? "Escribe lo que falta…" : "Escribe en italiano…", autocapitalize: "off", autocorrect: "off", spellcheck: "false",
+        onkeydown: (e) => e.key === "Enter" && !check.hidden && check.click() });
+      check = h("button.btn.primary", { onclick: () => {
+        const typed = voice.normalize(input.value);
+        if (!typed) return input.focus();
+        input.disabled = true;
+        const ok = type === "g"
+          ? alts.some((a) => voice.normalize(a) === typed)
+          : alts.some((a) => voice.compare(a, input.value).score >= 0.9 && typed.split(" ").length <= voice.normalize(a).split(" ").length + 1);
+        verdict(ok, type === "t");
+      } }, "Comprobar");
+      const dictate = type === "t" && voice.canRecognize() && h("button.btn.ghost", { onclick: async (e) => {
+        e.target.textContent = "Te escucho…";
+        try { const alt = await voice.listen(); if (alt.length) input.value = alt[0]; } catch {}
+        e.target.textContent = "🎤 Dilo";
+      } }, "🎤 Dilo");
+      body = [h("p.label", type === "g" ? "Completa" : "Traduce al italiano"), h("p.q", prompt), h("div.row", input, dictate), check, fb];
+      setTimeout(() => input.focus(), 50);
+    }
+    el.replaceChildren(count, h("div.card", body));
+  };
+  show();
+}
+
+const pct = (x) => `${Math.round(x * 100)} %`;
+const markActive = () => { state.activity[today()] = true; save(); };
+
+function courseCard() {
+  const n = nextLesson();
+  if (!n) return h("div.card", h("p.label", "Curso"), h("p", "Has superado todos los temas del curso. Repasa con los exámenes de nivel y el entrenador de verbos."));
+  const lv = LEVELS[n.L], les = lv.lessons[n.i];
+  return h("div.card",
+    h("p.label", `Curso · Nivel ${lv.id} · Tema ${n.i + 1} de ${lv.lessons.length}`),
+    h("h2", les.t), h("p.sub", `Teoría, ${les.vocab.length} palabras y ${les.ex.length} ejercicios. Unos 15 minutos.`),
+    h("div.row", h("button.btn.primary", { onclick: () => go(`#/curso/${lv.id}/${n.i}`) }, "Estudiar este tema"),
+      state.course.placed == null && h("button.btn.ghost", { onclick: () => go("#/curso/nivel") }, "Hacer la prueba de nivel")));
+}
+
+function viewCurso() {
+  const next = nextLesson();
+  view.replaceChildren(
+    h("header.top", h("h1", "Curso"), h("p.sub", "El libro de italiano, resumido: pocos temas por nivel, cada uno con su teoría, su vocabulario y sus ejercicios.")),
+    state.course.placed == null
+      ? h("div.card.hero", h("p.label", "Empieza por aquí"), h("h2", "Prueba de nivel"),
+          h("p.sub", "Unas pocas preguntas por nivel para no hacerte estudiar lo que ya sabes. Cinco minutos."),
+          h("button.btn.primary", { onclick: () => go("#/curso/nivel") }, "Hacer la prueba"))
+      : h("p.hint", `Tu nivel de partida es ${LEVELS[state.course.placed].id}. `, h("button.link", { onclick: () => go("#/curso/nivel") }, "Repetir la prueba")),
+    h("div.card", h("p.label", "Entrenador"), h("h2", "Verbos"), h("p.sub", "Diez conjugaciones por ronda, en los tiempos que elijas."),
+      h("button.btn.ghost", { onclick: () => go("#/curso/verbos") }, "Practicar verbos")),
+    ...LEVELS.map((lv, L) => {
+      const passed = lv.lessons.filter((_, i) => lessonPassed(L, i)).length;
+      const skipped = L < startLevel();
+      const exam = state.course.exams[lv.id];
+      return h("section",
+        h("h3", `Nivel ${lv.id} · ${lv.name}`),
+        h("p.hint", skipped ? "Convalidado por la prueba de nivel. Puedes repasarlo cuando quieras." : lv.desc),
+        h("div.card.flush",
+          lv.lessons.map((les, i) => {
+            const sc = lessonScore(L, i), isNext = next && next.L === L && next.i === i;
+            return h("div.prow" + (isNext ? ".next" : ""), { onclick: () => go(`#/curso/${lv.id}/${i}`) },
+              h("div", h("p.it", `${i + 1}. ${les.t}`), h("p.es", les.vocabTitle)),
+              h("span.tag" + (lessonPassed(L, i) ? ".on" : ""), sc == null ? (isNext ? "siguiente" : skipped ? "convalidado" : "pendiente") : pct(sc)));
+          }),
+          h("div.prow", { onclick: () => go(`#/curso/${lv.id}/examen`) },
+            h("div", h("p.it", `Examen de nivel ${lv.id}`), h("p.es", `${passed} de ${lv.lessons.length} temas superados`)),
+            h("span.tag" + (exam >= PASS_EXAM ? ".on" : ""), exam == null ? "examen" : pct(exam)))));
+    }),
+    h("div.card", h("p.label", "Nivel C1"), h("p.sub", "A partir de B2 se avanza con italiano real: series, lectura y conversación. Usa el tutor de IA para practicar y corregirte.")),
+  );
+}
+
+function viewCursoDetalle(arg, arg2) {
+  if (arg === "nivel") return viewPrueba();
+  if (arg === "verbos") return viewVerbos();
+  const L = LEVELS.findIndex((lv) => lv.id === arg);
+  if (L < 0) return go("#/curso");
+  if (arg2 === "examen") return viewExamen(L);
+  const i = Number(arg2);
+  if (!LEVELS[L].lessons[i]) return go("#/curso");
+  viewLeccion(L, i);
+}
+
+function viewLeccion(L, i) {
+  const lv = LEVELS[L], les = lv.lessons[i];
+  const bar = h("div.bar"), body = h("div.step");
+  const stage = (n) => { bar.replaceChildren(...[0, 1, 2].map((k) => h(`span${k < n ? ".done" : k === n ? ".now" : ""}`))); window.scrollTo(0, 0); };
+  view.replaceChildren(
+    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", `Nivel ${lv.id} · Tema ${i + 1}`)),
+    bar, h("h2", les.t), body);
+
+  const theory = () => {
+    stage(0);
+    body.replaceChildren(h("div.card.prose", h("div", { html: les.body })),
+      h("button.btn.primary", { onclick: vocab }, "Vocabulario"));
+  };
+  const vocab = () => {
+    stage(1);
+    body.replaceChildren(
+      h("p.hint", `${les.vocabTitle}. Toca cada palabra, escúchala y repítela en voz alta. Entrarán en tu repaso diario.`),
+      h("div.card.flush", les.vocab.map(([it, es]) => h("div.prow", { onclick: () => voice.speak(it) }, h("div", h("p.it", it), h("p.es", es)), h("span", "🔊")))),
+      h("div.row", h("button.btn.ghost", { onclick: theory }, "Volver a la teoría"),
+        h("button.btn.primary", { onclick: () => { les.vocab.forEach((_, k) => learn(`v-${L}-${i}-${k}`)); save(); exercises(); } }, "Ejercicios")));
+  };
+  const exercises = () => {
+    stage(2);
+    runExercises(body, les.ex, (score) => {
+      state.course.lessons[`${L}-${i}`] = Math.max(score, lessonScore(L, i) ?? 0);
+      markActive();
+      stage(3);
+      const ok = score >= PASS_LESSON, n = nextLesson();
+      body.replaceChildren(h("div.card.big.center",
+        h("p.emoji", ok ? "✅" : "💪"), h("h2", ok ? "Tema superado" : "Casi"),
+        h("p", `Has acertado el ${pct(score)}. ${ok ? "" : `Necesitas un ${pct(PASS_LESSON)} para darlo por superado: repasa la teoría y repite.`}`),
+        h("div.row.center",
+          h("button.btn.ghost", { onclick: theory }, "Repasar la teoría"),
+          h("button.btn.ghost", { onclick: exercises }, "Repetir ejercicios"),
+          ok && n && h("button.btn.primary", { onclick: () => go(`#/curso/${LEVELS[n.L].id}/${n.i}`) }, "Siguiente tema"),
+          h("button.btn" + (ok && n ? ".ghost" : ".primary"), { onclick: () => go("#/curso") }, "Volver al curso"))));
+    });
+  };
+  theory();
+}
+
+function viewExamen(L) {
+  const lv = LEVELS[L], body = h("div.step");
+  const list = shuffle(lv.lessons.flatMap((les) => shuffle(les.ex).slice(0, 3))).slice(0, 15);
+  view.replaceChildren(
+    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", `Examen de nivel ${lv.id}`)), body);
+  body.replaceChildren(h("div.card.big",
+    h("h2", `Examen de nivel ${lv.id}`),
+    h("p", `${list.length} preguntas de todos los temas del nivel. Lo superas con un ${pct(PASS_EXAM)}.`),
+    h("button.btn.primary", { onclick: () => runExercises(body, list, (score) => {
+      state.course.exams[lv.id] = Math.max(score, state.course.exams[lv.id] ?? 0);
+      markActive();
+      const ok = score >= PASS_EXAM;
+      body.replaceChildren(h("div.card.big.center",
+        h("p.emoji", ok ? "🏅" : "💪"), h("h2", ok ? `Nivel ${lv.id} superado` : "Todavía no"),
+        h("p", `Has acertado el ${pct(score)}. ${ok ? "" : "Repasa los temas con peor nota y vuelve a intentarlo."}`),
+        h("button.btn.primary", { onclick: () => go("#/curso") }, "Volver al curso")));
+    }) }, "Empezar")));
+}
+
+function viewPrueba() {
+  const body = h("div.step");
+  const PER_LEVEL = 6, NEED = 5;
+  view.replaceChildren(
+    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", "Prueba de nivel")), body);
+  const finish = (L) => {
+    state.course.placed = L; save();
+    body.replaceChildren(h("div.card.big.center",
+      h("p.emoji", "🎯"), h("h2", `Empiezas en el nivel ${LEVELS[L].id}`),
+      h("p", L === 0 ? "Empezamos por los cimientos. Irás rápido: mucho te sonará del español y del catalán."
+        : `Los niveles anteriores quedan convalidados, pero siguen abiertos por si quieres repasar algo.`),
+      h("button.btn.primary", { onclick: () => go("#/curso") }, "Ver mi curso")));
+  };
+  const level = (L) => {
+    const list = shuffle(LEVELS[L].lessons.flatMap((les) => les.ex.filter((e) => e[0] === "c"))).slice(0, PER_LEVEL);
+    body.replaceChildren(h("p.label", `Bloque ${L + 1} de ${LEVELS.length} · Nivel ${LEVELS[L].id}`), h("div.step"));
+    runExercises(body.lastChild, list, (score) => {
+      if (Math.round(score * list.length) < NEED || L === LEVELS.length - 1) finish(L);
+      else level(L + 1);
+    });
+  };
+  body.replaceChildren(h("div.card.big",
+    h("h2", "¿Por dónde empiezas?"),
+    h("p", `Hasta ${LEVELS.length} bloques de ${PER_LEVEL} preguntas, de más fácil a más difícil. Si aciertas ${NEED} o más pasas al siguiente; si no, ese es tu nivel de partida.`),
+    h("p.hint", "No adivines: si no lo sabes, falla. Así el curso empieza donde te toca."),
+    h("button.btn.primary", { onclick: () => level(0) }, "Empezar")));
+}
+
+function viewVerbos() {
+  const active = new Set(TENSES.filter((t) => t.level <= Math.max(1, nextLesson()?.L ?? LEVELS.length)).map((t) => t.id));
+  const body = h("div.step");
+  const chips = h("div.chipgroup", TENSES.map((t) => {
+    const c = h("button.chip" + (active.has(t.id) ? "" : ".off"), { onclick: () => {
+      if (active.has(t.id) && active.size > 1) active.delete(t.id); else active.add(t.id);
+      c.classList.toggle("off", !active.has(t.id));
+    } }, t.name);
+    return c;
+  }));
+  view.replaceChildren(
+    h("header.top.row", h("button.btn.ghost", { onclick: () => go("#/curso") }, "← Curso"), h("p.sub", "Entrenador de verbos")),
+    h("div.card", h("p.label", "Tiempos que quieres practicar"), chips), body);
+
+  const table = (v, tense) => h("table", conjugate(v, tense).map((f, p) => h("tr", h("td", PERSONS[p]), h("td", f))));
+  const round = () => {
+    let n = 0, right = 0;
+    const TOTAL = 10;
+    const ask = () => {
+      if (n >= TOTAL) {
+        markActive();
+        return body.replaceChildren(h("div.card.big.center", h("p.emoji", right >= 8 ? "🔥" : "💪"), h("h2", `${right} de ${TOTAL}`),
+          h("button.btn.primary", { onclick: round }, "Otra ronda")));
+      }
+      const v = VERBS[Math.floor(Math.random() * VERBS.length)];
+      const tense = TENSES.filter((t) => active.has(t.id))[Math.floor(Math.random() * active.size)];
+      const person = Math.floor(Math.random() * 6);
+      const ok = accepted(v, tense.id, person);
+      const fb = h("div.fb");
+      const input = h("input.input", { type: "text", placeholder: "Escribe la forma…", autocapitalize: "off", autocorrect: "off", spellcheck: "false",
+        onkeydown: (e) => e.key === "Enter" && !check.hidden && check.click() });
+      const check = h("button.btn.primary", { onclick: () => {
+        if (!input.value.trim()) return input.focus();
+        const good = ok.some((f) => voice.normalize(f) === voice.normalize(input.value));
+        if (good) right++;
+        n++; check.hidden = true; input.disabled = true;
+        fb.replaceChildren(h(`p.verdict.${good ? "ok" : "no"}`, good ? "Correcto" : "No del todo"), h("p.it", ok[0]),
+          h("details", h("summary", `Ver «${v.inf}» completo en ${tense.name.toLowerCase()}`), table(v, tense.id)),
+          h("button.btn.primary", { onclick: ask }, "Seguir"));
+        voice.speak(ok[0]);
+        fb.lastChild.focus();
+      } }, "Comprobar");
+      body.replaceChildren(h("p.count", `${n + 1} de ${TOTAL}`),
+        h("div.card.big", h("p.label", tense.name), h("p.it", v.inf), h("p.es", v.es), h("p.q", PERSONS[person]), input, check, fb));
+      setTimeout(() => input.focus(), 50);
+    };
+    ask();
+  };
+  round();
+}
+
 // ---------- Navegación ----------
-const ROUTES = { hoy: viewHoy, situaciones: viewSituaciones, frases: viewFrases, tutor: viewTutor, ajustes: viewAjustes };
+const ROUTES = { hoy: viewHoy, curso: viewCurso, situaciones: viewSituaciones, frases: viewFrases, tutor: viewTutor, ajustes: viewAjustes };
 
 function route() {
   voice.stopSpeaking();
   voice.stopListening();
-  const [, name = "hoy", arg] = location.hash.split("/");
+  const [, name = "hoy", arg, arg2] = location.hash.split("/");
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("on", a.getAttribute("href") === `#/${name === "sesion" ? "hoy" : name}`));
   window.scrollTo(0, 0);
   if (name === "sesion") viewSesion(Number(arg));
+  else if (name === "curso" && arg) viewCursoDetalle(arg, arg2);
   else (ROUTES[name] || viewHoy)();
 }
 
